@@ -366,7 +366,7 @@ export const api = {
   },
 
   async googleAuth(payload: ApiGoogleAuthRequest): Promise<ApiAuthResponse> {
-    const res = await fetch(`https://skillgap-ai-y8pz.onrender.com/api/auth/google`, {
+    const res = await fetch(`${API_BASE_URL}/auth/google`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -930,10 +930,15 @@ export const api = {
     return handleResponse<ApiLearningModuleSummary[]>(res);
   },
 
-  async getLearningModule(slugOrId: string | number, userId: number, level?: string): Promise<ApiLearningModuleDetail> {
-    const url = level
-      ? `${API_BASE_URL}/learning/modules/${slugOrId}?user_id=${userId}&level=${encodeURIComponent(level)}`
-      : `${API_BASE_URL}/learning/modules/${slugOrId}?user_id=${userId}`;
+  async getLearningModule(
+    slugOrId: string | number,
+    userId: number,
+    level?: string,
+    roleId?: number
+  ): Promise<ApiLearningModuleDetail> {
+    let url = `${API_BASE_URL}/learning/modules/${slugOrId}?user_id=${userId}`;
+    if (level) url += `&level=${encodeURIComponent(level)}`;
+    if (roleId) url += `&role_id=${roleId}`;
     const res = await fetch(url, { cache: 'no-store' });
     return handleResponse<ApiLearningModuleDetail>(res);
   },

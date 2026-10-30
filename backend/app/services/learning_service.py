@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException, status
 
@@ -49,7 +50,12 @@ class LearningService:
         # 1. Deterministic Learner Level Gate (Beginner -> Intermediate -> Advanced)
         raw_level = (user.experience_level or "Beginner").strip().capitalize()
         if raw_level not in ["Beginner", "Intermediate", "Advanced"]:
-            learner_level = "Beginner"
+            if raw_level.lower() in ["mid", "junior", "associate"]:
+                learner_level = "Intermediate"
+            elif raw_level.lower() in ["senior", "lead", "principal", "expert"]:
+                learner_level = "Advanced"
+            else:
+                learner_level = "Beginner"
         else:
             learner_level = raw_level
 
@@ -117,7 +123,11 @@ class LearningService:
 
         filtered_modules = [m for m in all_modules if is_module_relevant_to_role(m)]
         if not filtered_modules:
-            filtered_modules = [m for m in all_modules if m.target_role_name == "All"]
+            filtered_modules = [
+                m for m in all_modules if "all" in [r.strip().lower() for r in m.target_role_name.split(",")]
+            ]
+        if not filtered_modules:
+            filtered_modules = all_modules
 
         # Load user's concept progress
         progress_records = (
@@ -435,34 +445,163 @@ class LearningService:
         summaries.sort(key=module_priority_key)
         return summaries
 
+    def _resolve_learning_module(
+        self, db: Session, identifier: str, user: Optional[User] = None
+    ) -> Optional[LearningModule]:
+        if not identifier:
+            return None
+
+        identifier_clean = identifier.strip().strip("/")
+        if not identifier_clean:
+            return None
+
+        # 1. Exact slug match
+        mod = (
+            db.query(LearningModule)
+            .options(joinedload(LearningModule.skill))
+            .filter(LearningModule.slug == identifier_clean)
+            .first()
+        )
+        if mod:
+            return mod
+
+        all_mods = (
+            db.query(LearningModule)
+            .options(joinedload(LearningModule.skill))
+            .all()
+        )
+
+        # 2. Case-insensitive slug match with dash/underscore normalization
+        normalized_slug = identifier_clean.lower().replace("_", "-")
+        for m in all_mods:
+            if m.slug.lower() == normalized_slug or m.slug.lower() == identifier_clean.lower():
+                return m
+
+        user_role_name = (
+            user.target_role.name
+            if (user and user.target_role)
+            else ("Python Developer" if (user and user.target_role_id == 5) else "Data Analyst")
+        )
+
+        # 3. Numeric ID matching
+        if identifier_clean.isdigit():
+            ident_int = int(identifier_clean)
+            # 3a. Check LearningModule.id
+            mod_by_id = next((m for m in all_mods if m.id == ident_int), None)
+
+            # 3b. Check LearningModule.skill_id
+            mods_by_skill = [m for m in all_mods if m.skill_id == ident_int]
+            if mods_by_skill:
+                # If ident_int matches skill_id for user's role or no mod_by_id
+                if not mod_by_id or any(user_role_name.lower() in [r.strip().lower() for r in m.target_role_name.split(",")] for m in mods_by_skill):
+                    for m in mods_by_skill:
+                        targets = [r.strip().lower() for r in m.target_role_name.split(",")]
+                        if user_role_name.lower() in targets or "all" in targets:
+                            return m
+                    return mods_by_skill[0]
+
+            if mod_by_id:
+                return mod_by_id
+
+        # 4. Resolve via skill aliases and canonical curriculum mapping
+        from app.engines.roadmap_engine import roadmap_engine
+
+        clean_slug_input = identifier_clean.lower().replace("-", " ").replace("_", " ").strip()
+
+        alias_to_module = {
+            "python": "python-core-fundamentals" if user_role_name == "Python Developer" else "python-pandas-pipelines",
+            "python basics": "python-core-fundamentals",
+            "pandas": "python-pandas-pipelines",
+            "sql": "sql-fundamentals",
+            "sql basics": "sql-fundamentals",
+            "sql joins": "sql-joins-mastery",
+            "sql window": "sql-window-functions-analytics",
+            "sql window functions": "sql-window-functions-analytics",
+            "statistics": "statistics-hypothesis-testing",
+            "eda": "eda-workflow-data-profiling",
+            "data visualization": "power-bi-dax-modeling",
+            "power bi": "power-bi-dax-modeling",
+            "machine learning": "machine-learning-foundations",
+            "deep learning": "machine-learning-foundations",
+            "feature engineering": "feature-engineering-pipelines",
+            "model evaluation": "model-evaluation-metrics",
+            "oop": "python-oop-architecture",
+            "data structures": "python-collections-functions",
+            "exception handling": "python-error-handling-robustness",
+            "error handling": "python-error-handling-robustness",
+            "fastapi": "fastapi-rest-endpoints",
+            "pytest": "pytest-automated-testing",
+            "testing": "pytest-automated-testing",
+            "unit testing": "pytest-automated-testing",
+            "testing pytest": "pytest-automated-testing",
+            "docker": "docker-container-deployment",
+            "deployment": "docker-container-deployment",
+            "deployment docker": "docker-container-deployment",
+            "rest": "rest-api-design-architecture",
+            "rest api": "rest-api-design-architecture",
+            "http": "rest-api-design-architecture",
+            "http rest apis": "rest-api-design-architecture",
+            "git": "python-core-fundamentals",
+        }
+
+        mapped_slug = alias_to_module.get(clean_slug_input) or alias_to_module.get(identifier_clean.lower())
+        if mapped_slug:
+            target_mod = next((m for m in all_mods if m.slug.lower() == mapped_slug.lower()), None)
+            if target_mod:
+                return target_mod
+
+        for skill_name, mod_slug in roadmap_engine.SKILL_MODULE_MAP.items():
+            norm_skill = skill_name.lower().replace("&", "").replace("-", " ").strip()
+            if clean_slug_input == norm_skill or clean_slug_input == mod_slug.lower():
+                target_mod = next((m for m in all_mods if m.slug.lower() == mod_slug.lower()), None)
+                if target_mod:
+                    return target_mod
+
+        # 5. Check Skill table in database
+        matching_skill = (
+            db.query(Skill)
+            .filter(
+                (func.lower(Skill.name) == clean_slug_input)
+                | (func.lower(Skill.name) == identifier_clean.lower())
+            )
+            .first()
+        )
+        if matching_skill:
+            skill_mods = [m for m in all_mods if m.skill_id == matching_skill.id]
+            if skill_mods:
+                for sm in skill_mods:
+                    targets = [r.strip().lower() for r in sm.target_role_name.split(",")]
+                    if user_role_name.lower() in targets or "all" in targets:
+                        return sm
+                return skill_mods[0]
+
+        # 6. Check concept_name or title substring
+        for m in all_mods:
+            if clean_slug_input in m.concept_name.lower() or clean_slug_input in m.title.lower():
+                return m
+
+        return None
+
     def get_module_detail(
-        self, db: Session, user_id: int, identifier: str, level: Optional[str] = None
+        self,
+        db: Session,
+        user_id: int,
+        identifier: str,
+        level: Optional[str] = None,
+        role_id: Optional[int] = None,
     ) -> LearningModuleDetail:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail=f"User {user_id} not found.")
 
-        # Find module by ID or slug
-        if identifier.isdigit():
-            module = (
-                db.query(LearningModule)
-                .options(joinedload(LearningModule.skill))
-                .filter(LearningModule.id == int(identifier))
-                .first()
-            )
-        else:
-            module = (
-                db.query(LearningModule)
-                .options(joinedload(LearningModule.skill))
-                .filter(LearningModule.slug == identifier)
-                .first()
-            )
-
+        # Resolve module by ID, slug, skill ID, skill name, or alias
+        module = self._resolve_learning_module(db, identifier, user)
         if not module:
             raise HTTPException(status_code=404, detail=f"Learning module '{identifier}' not found.")
 
         # STRICT BACKEND ENFORCEMENT: Check prerequisites & level gate
-        all_summaries = self.get_modules_for_user(db, user_id, user.target_role_id)
+        target_role = role_id or user.target_role_id or 1
+        all_summaries = self.get_modules_for_user(db, user_id, target_role)
         summary_map = {s.slug: s for s in all_summaries}
         mod_sum = summary_map.get(module.slug)
         if mod_sum:
@@ -479,8 +618,22 @@ class LearningService:
                 unmet = []
                 for ps in prereq_slugs:
                     target_sum = summary_map.get(ps)
-                    if not target_sum or target_sum.status not in ["MASTERED", "DEVELOPING"]:
-                        unmet.append(target_sum.concept_name if target_sum else ps)
+                    if target_sum:
+                        if target_sum.is_locked or target_sum.status not in ["MASTERED", "DEVELOPING"]:
+                            unmet.append(target_sum.concept_name)
+                    else:
+                        ps_mod = db.query(LearningModule).filter(LearningModule.slug == ps).first()
+                        if ps_mod:
+                            ps_prog = (
+                                db.query(UserConceptProgress)
+                                .filter(
+                                    UserConceptProgress.user_id == user_id,
+                                    UserConceptProgress.module_id == ps_mod.id,
+                                )
+                                .first()
+                            )
+                            if not ps_prog or (ps_prog.status != "MASTERED" and not ps_prog.concept_check_passed):
+                                unmet.append(ps_mod.concept_name)
                 if unmet:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,

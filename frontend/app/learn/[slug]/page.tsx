@@ -117,7 +117,7 @@ function LearningModuleDetailContent() {
   const router = useRouter();
   const slug = params?.slug as string;
 
-  const { activeUserId, activeUser, isDemoMode, refreshUser } = useLearner();
+  const { activeUserId, activeUser, isDemoMode, refreshUser, isAuthenticated, isAuthLoading } = useLearner();
   const { openCoach } = useCoach();
 
   const [module, setModule] = useState<ApiLearningModuleDetail | null>(null);
@@ -159,11 +159,18 @@ function LearningModuleDetailContent() {
 
   const loadModuleDetail = async (overrideLevel?: LevelType) => {
     if (!slug) return;
+    if (isAuthLoading) return;
+    if (!isAuthenticated || activeUserId <= 0) {
+      setModule(null);
+      setError('Sign in to access this learning module.');
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
       const targetLvl = overrideLevel || selectedLevel;
-      const data = await api.getLearningModule(slug, activeUserId || 1, targetLvl);
+      const data = await api.getLearningModule(slug, activeUserId, targetLvl, activeUser?.target_role_id);
       setModule(data);
       if (data.effective_level && (data.effective_level === 'Beginner' || data.effective_level === 'Intermediate' || data.effective_level === 'Advanced')) {
         setSelectedLevel(data.effective_level as LevelType);
@@ -184,7 +191,7 @@ function LearningModuleDetailContent() {
   useEffect(() => {
     loadModuleDetail();
     loadRecommendedResource();
-  }, [slug, activeUserId]);
+  }, [slug, activeUserId, activeUser?.target_role_id, isAuthenticated, isAuthLoading]);
 
   const handleLevelChange = async (lvl: LevelType) => {
     setSelectedLevel(lvl);
@@ -211,11 +218,11 @@ function LearningModuleDetailContent() {
     setIsSubmittingPractice(true);
     try {
       const res = await api.submitPractice(slug, {
-        user_id: activeUserId || 1,
+        user_id: activeUserId,
         practice_type: practiceType,
         code: practiceCode,
         hints_used: revealedHints,
-      });
+      }, activeUserId);
       setPracticeResult(res);
       await refreshUser();
     } catch (err: any) {
@@ -231,9 +238,9 @@ function LearningModuleDetailContent() {
     setIsSubmittingQuiz(true);
     try {
       const res = await api.submitConceptCheck(slug, {
-        user_id: activeUserId || 1,
+        user_id: activeUserId,
         answers: quizAnswers,
-      });
+      }, activeUserId);
       setQuizResult(res);
       await refreshUser();
       // Reload module to update status & unlocked prerequisites
@@ -253,7 +260,7 @@ function LearningModuleDetailContent() {
       const res = await api.submitAppliedTask(slug, {
         code_or_query: appliedText,
         business_rationale: 'Submitted through applied learning workspace.',
-      });
+      }, activeUserId);
       setAppliedResult(res);
       await refreshUser();
       await loadModuleDetail();

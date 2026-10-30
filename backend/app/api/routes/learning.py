@@ -35,6 +35,7 @@ def get_learning_module_detail(
     identifier: str,
     user_id: int = Query(..., description="Active learner ID"),
     level: Optional[str] = Query(None, description="Optional learner level adaptation (Beginner, Intermediate, Advanced)"),
+    role_id: Optional[int] = Query(None, description="Optional target role ID"),
     db: Session = Depends(get_db),
 ):
     """
@@ -42,7 +43,7 @@ def get_learning_module_detail(
     STRICT BACKEND ENFORCEMENT: Rejects with HTTP 403 Forbidden if prerequisite concepts are not satisfied.
     Adapts content to target role and specified or calculated learner level.
     """
-    return learning_service.get_module_detail(db, user_id=user_id, identifier=identifier, level=level)
+    return learning_service.get_module_detail(db, user_id=user_id, identifier=identifier, level=level, role_id=role_id)
 
 
 @router.post("/modules/{identifier}/practice", response_model=LearningPracticeSubmitResponse)

@@ -29,7 +29,7 @@ import {
 
 export default function LearningHubPage() {
   const router = useRouter();
-  const { activeUserId, activeUser, isDemoMode, refreshUser } = useLearner();
+  const { activeUserId, activeUser, isDemoMode, refreshUser, isAuthenticated, isAuthLoading } = useLearner();
 
   const [modules, setModules] = useState<ApiLearningModuleSummary[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -38,17 +38,24 @@ export default function LearningHubPage() {
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const targetRoleName =
-    activeUser?.target_role?.name || 'Data Analyst';
+    activeUser?.target_role?.name || 'Choose a target role';
 
   const loadModules = async () => {
+    if (isAuthLoading) return;
+    if (!isAuthenticated || activeUserId <= 0) {
+      setModules([]);
+      setError('Sign in to view your learning path.');
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
       const data = await api.getLearningModules(
-        activeUserId || 1,
+        activeUserId,
         activeUser?.target_role_id
       );
-      setModules(data);
+      setModules(Array.isArray(data) ? data : []);
     } catch (err: any) {
       console.error('Failed to load learning modules:', err);
       setError(err?.message || 'Failed to load adaptive learning modules');
@@ -59,7 +66,7 @@ export default function LearningHubPage() {
 
   useEffect(() => {
     loadModules();
-  }, [activeUserId, activeUser?.target_role_id]);
+  }, [activeUserId, activeUser?.target_role_id, isAuthenticated, isAuthLoading]);
 
   // Compute metrics
   const stats = useMemo(() => {
@@ -104,9 +111,9 @@ export default function LearningHubPage() {
       // Filter by search query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
-        const matchTitle = m.title.toLowerCase().includes(q);
-        const matchSkill = m.skill_name.toLowerCase().includes(q);
-        const matchConcept = m.concept_name.toLowerCase().includes(q);
+        const matchTitle = (m.title || '').toLowerCase().includes(q);
+        const matchSkill = (m.skill_name || '').toLowerCase().includes(q);
+        const matchConcept = (m.concept_name || '').toLowerCase().includes(q);
         if (!matchTitle && !matchSkill && !matchConcept) return false;
       }
 
@@ -138,8 +145,8 @@ export default function LearningHubPage() {
         allLocked,
         hasActive,
       };
-    }).filter((g) => g.total > 0);
-  }, [filteredModules, modules]);
+    }).filter((g) => (statusFilter === 'ALL' && !searchQuery.trim() ? g.total > 0 : g.modules.length > 0));
+  }, [filteredModules, modules, statusFilter, searchQuery]);
 
   const getStatusBadge = (module: ApiLearningModuleSummary) => {
     if (module.is_locked || module.status === 'LOCKED') {
