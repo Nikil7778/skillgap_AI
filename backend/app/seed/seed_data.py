@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from typing import Optional, Dict
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal, engine, Base
 from app.models.role import Role, RoleSkill
@@ -1042,11 +1043,55 @@ def seed_database(db: Session) -> None:
         db.add(lab2)
         db.commit()
 
-    # 11. Seed Modular Learning Units (Phase 19)
+    # 11 & 12. Seed Modular Learning Units and External Resources (Curriculum)
+    seed_learning_curriculum(db, skill_objs=skill_objs)
+
+    # Initialize Alex Mercer demo baseline progress
+    reset_alex_mercer(db)
+    seed_presentation_learner(db)
+
+
+def seed_learning_curriculum(db: Session, skill_objs: Optional[Dict[str, Skill]] = None) -> None:
+    """
+    Idempotent seed function to populate or update learning_modules and
+    learning_resources curriculum definitions from LEARNING_MODULES_SEED.
+    Guaranteed NOT to modify users, progress, assessments, evidence, or skills.
+    """
+    if skill_objs is None:
+        skill_objs = {}
+
+    def _to_json_str(val):
+        if val is None:
+            return None
+        if isinstance(val, (list, dict)):
+            return json.dumps(val)
+        return str(val)
+
+    # 1. Seed Modular Learning Units (Phase 19 & 21)
     for mod_data in LEARNING_MODULES_SEED:
         skill = skill_objs.get(mod_data["skill_name"]) or db.query(Skill).filter(Skill.name == mod_data["skill_name"]).first()
         if not skill:
-            continue
+            skill = Skill(name=mod_data["skill_name"], category="Core", description=mod_data["skill_name"])
+            db.add(skill)
+            db.commit()
+            db.refresh(skill)
+            skill_objs[mod_data["skill_name"]] = skill
+
+        prereqs = _to_json_str(mod_data.get("prerequisite_concept_slugs"))
+        objectives = _to_json_str(mod_data["learning_objectives"])
+        key_rules = _to_json_str(mod_data.get("key_rules"))
+        common_mistakes = _to_json_str(mod_data.get("common_mistakes"))
+        worked_example = _to_json_str(mod_data["worked_example"])
+        guided_practice = _to_json_str(mod_data["guided_practice"])
+        independent_practice = _to_json_str(mod_data["independent_practice"])
+        concept_check = _to_json_str(mod_data["concept_check"])
+        applied_task = _to_json_str(mod_data["applied_task"])
+        subtopics = _to_json_str(mod_data.get("subtopics"))
+        why_role = _to_json_str(mod_data.get("why_it_matters_by_role"))
+        code_examples = _to_json_str(mod_data.get("code_examples"))
+        quick_ref = _to_json_str(mod_data.get("quick_reference"))
+        level_vars = _to_json_str(mod_data.get("level_variations"))
+
         existing_mod = db.query(LearningModule).filter_by(slug=mod_data["slug"]).first()
         if not existing_mod:
             new_mod = LearningModule(
@@ -1057,23 +1102,23 @@ def seed_database(db: Session) -> None:
                 difficulty=mod_data["difficulty"],
                 estimated_minutes=mod_data["estimated_minutes"],
                 order_index=mod_data["order_index"],
-                prerequisite_concept_slugs=mod_data.get("prerequisite_concept_slugs"),
+                prerequisite_concept_slugs=prereqs,
                 target_role_name=mod_data.get("target_role_name", "All"),
-                learning_objectives=json.dumps(mod_data["learning_objectives"]),
+                learning_objectives=objectives,
                 explanation=mod_data["explanation"],
-                key_rules=mod_data.get("key_rules"),
-                common_mistakes=mod_data.get("common_mistakes"),
-                worked_example=json.dumps(mod_data["worked_example"]),
-                guided_practice=json.dumps(mod_data["guided_practice"]),
-                independent_practice=json.dumps(mod_data["independent_practice"]),
-                concept_check=json.dumps(mod_data["concept_check"]),
+                key_rules=key_rules,
+                common_mistakes=common_mistakes,
+                worked_example=worked_example,
+                guided_practice=guided_practice,
+                independent_practice=independent_practice,
+                concept_check=concept_check,
                 passing_threshold=75.0,
-                applied_task=json.dumps(mod_data["applied_task"]),
-                subtopics=json.dumps(mod_data["subtopics"]) if mod_data.get("subtopics") else None,
-                why_it_matters_by_role=json.dumps(mod_data["why_it_matters_by_role"]) if mod_data.get("why_it_matters_by_role") else None,
-                code_examples=json.dumps(mod_data["code_examples"]) if mod_data.get("code_examples") else None,
-                quick_reference=json.dumps(mod_data["quick_reference"]) if mod_data.get("quick_reference") else None,
-                level_variations=json.dumps(mod_data["level_variations"]) if mod_data.get("level_variations") else None,
+                applied_task=applied_task,
+                subtopics=subtopics,
+                why_it_matters_by_role=why_role,
+                code_examples=code_examples,
+                quick_reference=quick_ref,
+                level_variations=level_vars,
             )
             db.add(new_mod)
         else:
@@ -1083,31 +1128,31 @@ def seed_database(db: Session) -> None:
             existing_mod.difficulty = mod_data["difficulty"]
             existing_mod.estimated_minutes = mod_data["estimated_minutes"]
             existing_mod.order_index = mod_data["order_index"]
-            existing_mod.prerequisite_concept_slugs = mod_data.get("prerequisite_concept_slugs")
-            existing_mod.learning_objectives = json.dumps(mod_data["learning_objectives"])
+            existing_mod.prerequisite_concept_slugs = prereqs
+            existing_mod.learning_objectives = objectives
             existing_mod.explanation = mod_data["explanation"]
-            existing_mod.key_rules = mod_data.get("key_rules")
-            existing_mod.common_mistakes = mod_data.get("common_mistakes")
-            existing_mod.worked_example = json.dumps(mod_data["worked_example"])
-            existing_mod.concept_check = json.dumps(mod_data["concept_check"])
-            existing_mod.guided_practice = json.dumps(mod_data["guided_practice"])
-            existing_mod.independent_practice = json.dumps(mod_data["independent_practice"])
-            existing_mod.applied_task = json.dumps(mod_data["applied_task"])
-            if mod_data.get("subtopics"):
-                existing_mod.subtopics = json.dumps(mod_data["subtopics"])
-            if mod_data.get("why_it_matters_by_role"):
-                existing_mod.why_it_matters_by_role = json.dumps(mod_data["why_it_matters_by_role"])
-            if mod_data.get("code_examples"):
-                existing_mod.code_examples = json.dumps(mod_data["code_examples"])
-            if mod_data.get("quick_reference"):
-                existing_mod.quick_reference = json.dumps(mod_data["quick_reference"])
-            if mod_data.get("level_variations"):
-                existing_mod.level_variations = json.dumps(mod_data["level_variations"])
+            existing_mod.key_rules = key_rules
+            existing_mod.common_mistakes = common_mistakes
+            existing_mod.worked_example = worked_example
+            existing_mod.concept_check = concept_check
+            existing_mod.guided_practice = guided_practice
+            existing_mod.independent_practice = independent_practice
+            existing_mod.applied_task = applied_task
+            if subtopics:
+                existing_mod.subtopics = subtopics
+            if why_role:
+                existing_mod.why_it_matters_by_role = why_role
+            if code_examples:
+                existing_mod.code_examples = code_examples
+            if quick_ref:
+                existing_mod.quick_reference = quick_ref
+            if level_vars:
+                existing_mod.level_variations = level_vars
     db.commit()
 
-    # 12. Seed Authoritative External Learning Resources Registry (Phase 20)
+    # 2. Seed Authoritative External Learning Resources Registry (Phase 20)
     for res_data in LEARNING_RESOURCES_SEED:
-        skill = skill_objs.get(res_data["skill_name"])
+        skill = skill_objs.get(res_data["skill_name"]) or db.query(Skill).filter(Skill.name == res_data["skill_name"]).first()
         existing_res = db.query(LearningResource).filter_by(url=res_data["url"]).first()
         if not existing_res:
             new_res = LearningResource(
@@ -1133,10 +1178,6 @@ def seed_database(db: Session) -> None:
             if skill:
                 existing_res.skill_id = skill.id
     db.commit()
-
-    # Initialize Alex Mercer demo baseline progress
-    reset_alex_mercer(db)
-    seed_presentation_learner(db)
 
 
 def reset_alex_mercer(db: Session) -> None:

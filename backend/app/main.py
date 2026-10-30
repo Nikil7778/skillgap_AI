@@ -47,10 +47,13 @@ if settings.CORS_ORIGINS:
 
 @app.on_event("startup")
 def on_startup():
+    import logging
+    logger = logging.getLogger("uvicorn.error")
     from sqlalchemy import inspect, text
-    from app.core.database import engine, Base
+    from app.core.database import engine, Base, SessionLocal
+
+    # 1. Database schema creation & incremental migrations
     try:
-        # Create any newly defined tables
         Base.metadata.create_all(bind=engine)
         with engine.connect() as conn:
             inspector = inspect(conn)
@@ -86,22 +89,41 @@ def on_startup():
                     if col_name not in lm_cols:
                         conn.execute(text(f"ALTER TABLE learning_modules ADD COLUMN {col_name} TEXT"))
             conn.commit()
+    except Exception as e:
+        logger.warning(f"Database schema verification notice during startup: {e}")
 
-        # Ensure presentation learner and Analytics Engineer role are available
-        from app.core.database import SessionLocal
-        from app.models.user import User
-        from app.models.role import Role
-        from app.seed.seed_data import seed_database
-        init_db = SessionLocal()
-        try:
-            ae_role = init_db.query(Role).filter_by(name="Analytics Engineer").first()
-            nikil_user = init_db.query(User).filter_by(email="nikila.2509@gmail.com").first()
-            if not ae_role or not nikil_user or nikil_user.target_role_id != (ae_role.id if ae_role else None):
-                seed_database(init_db)
-        finally:
-            init_db.close()
+    # 2. Global Learning Curriculum Seeding (Independent of learner profile or demo state)
+    from app.models.learning import LearningModule
+    from app.seed.seed_data import seed_learning_curriculum
+
+    init_db = SessionLocal()
+    try:
+        mod_count = init_db.query(LearningModule).count()
+        if mod_count == 0:
+            logger.info("Learning modules table is empty. Seeding curriculum...")
+            seed_learning_curriculum(init_db)
+            final_count = init_db.query(LearningModule).count()
+            logger.info(f"Learning curriculum successfully seeded ({final_count} modules).")
+    except Exception as seed_err:
+        logger.error(f"Failed to seed learning curriculum on startup: {seed_err}", exc_info=True)
+    finally:
+        init_db.close()
+
+    # 3. Ensure presentation learner and Analytics Engineer role are available
+    from app.models.user import User
+    from app.models.role import Role
+    from app.seed.seed_data import seed_database
+
+    init_db = SessionLocal()
+    try:
+        ae_role = init_db.query(Role).filter_by(name="Analytics Engineer").first()
+        nikil_user = init_db.query(User).filter_by(email="nikila.2509@gmail.com").first()
+        if not ae_role or not nikil_user or nikil_user.target_role_id != (ae_role.id if ae_role else None):
+            seed_database(init_db)
     except Exception:
         pass
+    finally:
+        init_db.close()
 
 # Include API Routers
 app.include_router(health.router, prefix=settings.API_V1_STR)
